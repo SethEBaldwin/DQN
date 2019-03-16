@@ -15,16 +15,16 @@ EPSILON_DEC = .95/1e5 #.9/1e6 #amount to decrease epsilon each training step unt
 FRAME_SKIP = 4 #make observation once every FRAME_SKIP frames (frames = FRAME_SKIP*steps)
 N_ACTIONS = 3 #pong only needs actions 1,2,3 (have to add one when env.step)
 LOAD = False #load model?
-LOAD_PATH = "/dqn_saves/pong.ckpt" #loads from here if LOAD
+LOAD_PATH = "/tmp/pong.ckpt" #loads from here if LOAD
 MEMORY_CAPACITY = 10000 #10**6
 TRAIN = True #train model?
 SAVE = True #save model? only saved if TRAIN is also True
 SAVE_AFTER = 10000 #saves after this many steps
-SAVE_PATH = "/dqn_saves/pong.ckpt" #saves to here if TRAIN
-TENSORBOARD = True #send data to tensorboard? only sends data if TRAIN is also True
-TENSORBOARD_AFTER = 10000 #sends data to tensorboard after this many steps
-TENSORBOARD_DIR = "/pong"
-START_TRAIN = 9000 #50000 #start training after this many steps. Must be >= 5 for indexing reasons.
+SAVE_PATH = "/tmp/pong.ckpt" #saves to here if TRAIN
+TENSORBOARD = True #send data to tensorboard?
+TENSORBOARD_UPDATE = 10000 #number of steps in between each tensorboard update
+TENSORBOARD_DIR = "/pong3"
+START_TRAIN = 9900 #50000 #start training after this many steps
 UPDATE_TARGET = 1000 #10000 #number of steps in between each target network update
 DISCOUNT_RATE = .99
 LEARNING_RATE = 1e-4 #1e-5
@@ -33,25 +33,13 @@ CROP_TOP = 16
 CROP_BOTTOM = 34 #crop range is chosen for pong/breakout
 N_SCORES = 100 #number of scores to save
 
-#tensorboard
-reward_tb = tf.placeholder(tf.float32, shape = None, name = "reward_tb")
-reward_summary = tf.summary.scalar("Reward", reward_tb)
-score_tb = tf.placeholder(tf.float32, shape = None, name = "score_tb")
-score_summary = tf.summary.scalar("Score", score_tb)
-Q_value_tb = tf.placeholder(tf.float32, shape = None, name = "Q_value_tb")
-Q_value_summary = tf.summary.scalar("Q value", Q_value_tb)
-loss_tb = tf.placeholder(tf.float32, shape = None, name = "loss_tb")
-loss_summary = tf.summary.scalar("Loss", loss_tb)
-merged = tf.summary.merge_all()
-train_writer = tf.summary.FileWriter(TENSORBOARD_DIR, sess.graph)
-
-def get_target(Q_value, reward, done):
+def compute_target(Q_value, reward, done):
 	if done: return reward
-	else: return reward + DISCOUNT_RATE*Q_value
+	else: return reward + DISCOUNT_RATE * Q_value
 
 class DeepQNetwork:
 
-	def __init__(self,name, learning_rate, n_actions):
+	def __init__(self, name, learning_rate, n_actions):
 		self.name = name
 		self.n_actions = n_actions
 		with tf.variable_scope(self.name):
@@ -70,19 +58,17 @@ class DeepQNetwork:
 			self.loss = tf.losses.huber_loss(self.targets,
 				tf.reduce_sum(self.output*tf.one_hot(tf.cast(self.actions,tf.int32), self.n_actions),axis=1))
 			self.optimizer = tf.train.RMSPropOptimizer(learning_rate).minimize(self.loss)
+		self.saver = tf.train.Saver(tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, self.name))
 		sess.run(tf.global_variables_initializer())
 		
 	def greedy_action(self, input):
-		output = sess.run(self.output,feed_dict={self.input: input})[0]
-		return (np.argmax(output),max(output)) #action, Q_value
+		output = sess.run(self.output, feed_dict={self.input: input})[0]
+		return (np.argmax(output), max(output)) #action, Q_value
 
 	def get_action(self, input, epsilon):
 		greedy = np.random.random() > epsilon
-		if greedy: 
-			action, Q_value = self.greedy_action(input)
-		else: 
-			action = np.random.randint(0, self.n_actions)
-			Q_value = 0 #will be ignored since not greedy
+		if greedy: action, Q_value = self.greedy_action(input)
+		else: action, Q_value = np.random.randint(0, self.n_actions), 0 #here Q_value will be ignored since not greedy
 		return (action, Q_value, greedy)
 		
 	def feed_forward(self,input):
@@ -90,7 +76,7 @@ class DeepQNetwork:
 		
 	def get_targets(self,x_batch2,rewards_batch,dones_batch):
 		output = self.feed_forward(x_batch2)
-		targets = [get_target(max(Q),reward,done) for (Q,reward,done) in zip(output, rewards_batch, dones_batch)]
+		targets = [compute_target(max(Q),reward,done) for (Q,reward,done) in zip(output, rewards_batch, dones_batch)]
 		return targets
 		
 	def train_on_batch(self, input_batch, targets, actions_batch):
@@ -98,9 +84,14 @@ class DeepQNetwork:
 			feed_dict={self.input: input_batch, self.targets:targets, self.actions: actions_batch})	
 		return loss
 		
+	def save(self, sess, path):
+		self.saver.restore(sess, path)
+	
+	def load(self, sess, path):
+		self.saver.save(sess, path)
+		
 dqn = DeepQNetwork("dqn", LEARNING_RATE, N_ACTIONS)
 dqn_target = DeepQNetwork("dqn_target", LEARNING_RATE, N_ACTIONS)
-saver = tf.train.Saver()
 
 def copy_weights(from_name, to_name):
 	from_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, from_name)
@@ -117,18 +108,12 @@ def compress(observation):
 	return np.reshape(np.array(img),[1, 80, 80, 1]) 
 	#don't divide by 255 yet as this changes from uint8 to float32 which takes up 4 times as much memory
 	
-#returns the last m elements of a deque. if m < length returns the whole deque.
-def tail(xs, m): 
-	length = len(xs)
-	n = min(length, m)
-	return [ xs[i] for i in range(length-n, length) ]
-	
 class GameState:
 
 	def __init__(self, env_name):
 		self.env = gym.make(env_name)
 		observation = compress(self.env.reset())
-		self.observations_4 = np.concatenate([observation]*4,-1)
+		self.observations_4 = np.concatenate([observation] * 4, -1)
 		self.action = 0
 		self.reward = 0
 		self.done = False
@@ -137,7 +122,7 @@ class GameState:
 	
 	def reset(self):
 		observation = compress(self.env.reset())
-		self.observations_4 = np.concatenate([observation]*4,-1)
+		self.observations_4 = np.concatenate([observation] * 4, -1)
 		self.action = 0
 		self.reward = 0
 		self.done = False
@@ -149,12 +134,12 @@ class GameState:
 	def perform_action(self, n_frames):
 		reward = 0
 		for _ in range(n_frames):
-			raw_observation, new_reward, self.done, _ = self.env.step(self.action+1)
+			raw_observation, new_reward, self.done, _ = self.env.step(self.action + 1)
 			reward += new_reward
 			if self.done: break
 		self.reward = reward
 		self.score += reward
-		self.observations_4 = np.concatenate([self.observations_4[:,:,:,1:4],compress(raw_observation)],-1)
+		self.observations_4 = np.concatenate([self.observations_4[:,:,:,1:4], compress(raw_observation)], -1)
 		self.env.render()
 
 state = GameState(ENV_NAME)
@@ -174,59 +159,74 @@ class ReplayMemory:
 		self.dones.append(done)
 		
 	def stack_observations(self, n, m):
-		observations = [self.observations[i] for i in range(n,m)]
+		observations = [self.observations[i] for i in range(n, m)]
 		return np.concatenate(observations,-1)
 		
 	def get_batch(self, batch_size):
-		batch_idxs = [ np.random.randint(3,len(self.actions)-1) for _ in range(batch_size) ]
-		actions_batch = [ self.actions[idx] for idx in batch_idxs ]
-		rewards_batch = [ self.rewards[idx] for idx in batch_idxs ]
-		dones_batch = [ self.dones[idx] for idx in batch_idxs ]
-		x_batch = np.concatenate([ self.stack_observations(idx-3,idx+1) for idx in batch_idxs ],0)
-		x_batch2 = np.concatenate([ self.stack_observations(idx-2,idx+2) for idx in batch_idxs ],0)
+		batch_idxs = [np.random.randint(3,len(self.actions)-1) for _ in range(batch_size)]
+		actions_batch = [self.actions[idx] for idx in batch_idxs]
+		rewards_batch = [self.rewards[idx] for idx in batch_idxs]
+		dones_batch = [self.dones[idx] for idx in batch_idxs]
+		x_batch = np.concatenate([self.stack_observations(idx - 3, idx + 1) for idx in batch_idxs], 0)
+		x_batch2 = np.concatenate([self.stack_observations(idx - 2, idx + 2) for idx in batch_idxs], 0)
 		return (actions_batch, rewards_batch, dones_batch, x_batch, x_batch2)
 
 memory = ReplayMemory(MEMORY_CAPACITY)
 
-class EvaluationData:
+class PerformanceData:
 
-	def __init__(self):
-		self.Q_values = deque(maxlen = TENSORBOARD_AFTER)
-		self.losses = deque(maxlen = TENSORBOARD_AFTER)
+	def __init__(self, tensorboard_dir, train, name):
+		self.losses = deque(maxlen = TENSORBOARD_UPDATE)
+		self.Q_values = deque(maxlen = TENSORBOARD_UPDATE)
+		self.rewards = deque(maxlen = TENSORBOARD_UPDATE)
 		self.scores = deque(maxlen = N_SCORES)
 		self.max_score = -21.0
+		with tf.name_scope(name):
+			self.loss_tb = tf.placeholder(tf.float32, shape = None, name = "loss_tb")
+			self.loss_summary = tf.summary.scalar("Loss", self.loss_tb)
+			self.Q_value_tb = tf.placeholder(tf.float32, shape = None, name = "Q_value_tb")
+			self.Q_value_summary = tf.summary.scalar("Q-value", self.Q_value_tb)
+			self.reward_tb = tf.placeholder(tf.float32, shape = None, name = "reward_tb")
+			self.reward_summary = tf.summary.scalar("Reward", self.reward_tb)
+			self.score_tb = tf.placeholder(tf.float32, shape = None, name = "score_tb")
+			self.score_summary = tf.summary.scalar("Score", self.score_tb)
+		if train: self.merged = tf.summary.merge_all(scope = name)
+		else: self.merged = tf.summary.merge([self.Q_value_summary, self.reward_summary, self.score_summary])
+		self.train_writer = tf.summary.FileWriter(tensorboard_dir, sess.graph)
 		self.steps_total = 0
 		self.games_complete = 0
 		self.time_start = time.clock()
 		self.epsilon = EPSILON_START
 
-	def game_complete(self, steps, score):
-		self.games_complete += 1
-		self.scores.append(score)
-		if score > self.max_score: self.max_score = score
-		print("Episode {} ended after {} frames".format(self.games_complete, steps*FRAME_SKIP))
-		print("Score: {}".format(score))
-		
-	def print_data(self,recent_rewards):
+	def update_tensorboard(self):
+		summary = sess.run(self.merged, feed_dict={
+			self.loss_tb: np.mean(self.losses), self.Q_value_tb: np.mean(self.Q_values),
+			self.reward_tb: np.mean(self.rewards), self.score_tb: np.mean(self.scores)})
+		self.train_writer.add_summary(summary, self.steps_total)
+
+	def print_data(self):
 		print("Best score: {}".format(self.max_score))
-		print("Reward average over last {} rewards: {}".format(len(recent_rewards), round(np.mean(recent_rewards), 3)))
-		print("Score average over last {} games: {}".format(len(self.scores),round(np.mean(self.scores),1)))
+		print("Reward average over last {} rewards: {}".format(len(self.rewards), round(np.mean(self.rewards), 3)))
+		print("Score average over last {} games: {}".format(len(self.scores), round(np.mean(self.scores),1)))
 		if len(self.Q_values) > 0:
 			print("Predicted max Q average over last {} greedy steps: {:.2f}".format(len(self.Q_values), np.mean(self.Q_values)))
 		if len(self.losses) > 0:
 			print("Loss average over last {} training steps: {:.5f}".format(len(self.losses), np.mean(self.losses)))
-		print("Probability of random action: {}".format(round(self.epsilon,2)))
+		print("Probability of random action: {}".format(round(self.epsilon, 2)))
 		print("Total training steps: {}".format(self.steps_total))
 		time_elapsed = time.clock() - self.time_start
-		print("Total training hours: {}".format(round(time_elapsed/(60*60), 1)))
-		print("Average training steps per hour: {}".format(int(round(60*60*self.steps_total/time_elapsed))))
+		print("Total training hours: {}".format(round(time_elapsed / (60 * 60), 1)))
+		print("Average training steps per hour: {}".format(int(round(60 * 60 * self.steps_total / time_elapsed))))
 		
-data = EvaluationData()
+if TRAIN: data_name = "Training_Data"
+else: data_name = "Evaluation_Data"
+data = PerformanceData(TENSORBOARD_DIR, TRAIN, data_name)
 
 #start program
 if LOAD:
-	saver.restore(sess, LOAD_PATH)
+	dqn.load(sess, LOAD_PATH)
 	print("\nModel restored")
+copy_weights(dqn.name, dqn_target.name)
 while not (len(data.scores) >= N_SCORES and np.mean(data.scores) >= 18):
 	#initialize episode
 	print("\nStarting episode {}...".format(data.games_complete+1))
@@ -236,8 +236,9 @@ while not (len(data.scores) >= N_SCORES and np.mean(data.scores) >= 18):
 		#get action
 		state.action, Q_value, greedy = dqn.get_action(state.observations_4/255, data.epsilon)
 		if greedy: data.Q_values.append(Q_value)
-		#get reward, done, new observation
-		state.perform_action(FRAME_SKIP) #performs state.action, updates state.observations_4,state.reward,state.done
+		#perform action, update reward, done, observations_4, score
+		state.perform_action(FRAME_SKIP)
+		data.rewards.append(state.reward)
 		memory.append(state.observations_4[:,:,:,2:3], state.action, state.reward, state.done) #old observation
 		#train
 		if TRAIN and data.steps_total >= START_TRAIN and data.steps_total >= 5:
@@ -255,26 +256,26 @@ while not (len(data.scores) >= N_SCORES and np.mean(data.scores) >= 18):
 			print("Target network updated")
 		#save
 		if TRAIN and SAVE and data.steps_total % SAVE_AFTER == 0:
-			saver.save(sess, SAVE_PATH)
-			print("Model saved in path: %s" % SAVE_PATH)
+			dqn.save(sess, SAVE_PATH)
+			print("Model saved in path: {}".format(SAVE_PATH))
 		#tensorboard
-		if TRAIN and TENSORBOARD and data.steps_total % TENSORBOARD_AFTER == 0:
-			#losses will be empty if TENSORBOARD_AFTER <= START_TRAIN
-			#scores may be empty if TENSORBOARD_AFTER is smaller than the number of steps in the first episode
-			recent_rewards = tail(memory.rewards,TENSORBOARD_AFTER)
-			summary = sess.run(merged, feed_dict={
-				reward_tb: np.mean(recent_rewards), score_tb: np.mean(data.scores), 
-				Q_value_tb: np.mean(data.Q_values), loss_tb: np.mean(data.losses)})
-			train_writer.add_summary(summary, data.steps_total)
-			print("Training data sent to tensorboard")
+		if TENSORBOARD and data.steps_total % TENSORBOARD_UPDATE == 0:
+			#losses will be empty if TENSORBOARD_UPDATE <= START_TRAIN
+			#scores may be empty if TENSORBOARD_UPDATE is smaller than the number of steps in the first episode
+			data.update_tensorboard()
+			if TRAIN: print("Training data sent to tensorboard")
+			else: print("Evaluation data sent to tensorboard")
 	#game complete
-	data.game_complete(state.steps, state.score) #updates data and prints results of game
-	recent_rewards = tail(memory.rewards, TENSORBOARD_AFTER)
-	data.print_data(recent_rewards)
+	data.games_complete += 1
+	data.scores.append(state.score)
+	if state.score > data.max_score: data.max_score = state.score
+	print("Episode {} ended after {} frames".format(data.games_complete, state.steps * FRAME_SKIP))
+	print("Score: {}".format(state.score))
+	data.print_data()
 #stop condition met
+if TRAIN: print("\nTraining complete")
 if TRAIN and SAVE: 
-	print("\nTraining complete")
-	saver.save(sess, SAVE_PATH)
-	print("Model saved in path: %s" % SAVE_PATH)
+	dqn.save(sess, SAVE_PATH)
+	print("Model saved in path: {}".format(SAVE_PATH))
 print("\nProgram complete")
 state.env.close()
