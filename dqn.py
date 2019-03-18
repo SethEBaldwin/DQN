@@ -11,9 +11,9 @@ sess = tf.Session()
 ENV_NAME = "PongNoFrameskip-v4"
 EPSILON_START = 1 #starting probability of random action
 EPSILON_MIN = .05 #.1
-EPSILON_DEC = .95/1e5 #.9/1e6 #amount to decrease epsilon each training step until arriving at EPSILON_MIN
-FRAME_SKIP = 4 #make observation once every FRAME_SKIP frames (frames = FRAME_SKIP*steps)
-N_ACTIONS = 3 #pong only needs actions 1,2,3 (have to add one when env.step)
+EPSILON_DEC = .95 / 1e5 #.9 / 1e6 #amount to decrease epsilon each training step until arriving at EPSILON_MIN
+FRAME_SKIP = 4 #make observation once every FRAME_SKIP frames (frames = FRAME_SKIP * steps)
+N_ACTIONS = 3 #pong only needs actions 1, 2, 3 (have to add one when env.step)
 LOAD = False #load model?
 LOAD_PATH = "/tmp/pong.ckpt" #loads from here if LOAD
 MEMORY_CAPACITY = 10000 #10**6
@@ -23,7 +23,7 @@ SAVE_AFTER = 10000 #saves after this many steps
 SAVE_PATH = "/tmp/pong.ckpt" #saves to here if TRAIN
 TENSORBOARD = True #send data to tensorboard?
 TENSORBOARD_UPDATE = 10000 #number of steps in between each tensorboard update
-TENSORBOARD_DIR = "/pong3"
+TENSORBOARD_DIR = "/pong"
 START_TRAIN = 9900 #50000 #start training after this many steps
 UPDATE_TARGET = 1000 #10000 #number of steps in between each target network update
 DISCOUNT_RATE = .99
@@ -33,9 +33,14 @@ CROP_TOP = 16
 CROP_BOTTOM = 34 #crop range is chosen for pong/breakout
 N_SCORES = 100 #number of scores to save
 
+def clip(r):
+	if r > 1: return 1
+	elif r < -1: return -1
+	else: return r
+
 def compute_target(Q_value, reward, done):
-	if done: return reward
-	else: return reward + DISCOUNT_RATE * Q_value
+	if done: return clip(reward)
+	else: return clip(reward) + DISCOUNT_RATE * Q_value
 
 class DeepQNetwork:
 
@@ -43,26 +48,28 @@ class DeepQNetwork:
 		self.name = name
 		self.n_actions = n_actions
 		with tf.variable_scope(self.name):
-			self.input = tf.placeholder(tf.float32, shape =[None,80,80,4])
-			self.conv = tf.layers.conv2d(self.input, filters=32, kernel_size=8, strides=(4,4), 
+			self.input = tf.placeholder(tf.float32, shape =[None, 84, 84, 4])
+			self.conv = tf.layers.conv2d(self.input, filters = 32, kernel_size = 8, strides = (4, 4), 
 				activation = tf.nn.relu, kernel_initializer=tf.contrib.layers.variance_scaling_initializer())
-			self.conv2 = tf.layers.conv2d(self.conv, 64, 4, (2,2), activation = tf.nn.relu, 
+			self.conv2 = tf.layers.conv2d(self.conv, 64, 4, (2, 2), activation = tf.nn.relu, 
 				kernel_initializer=tf.contrib.layers.variance_scaling_initializer())
-			self.flat = tf.layers.flatten(self.conv2)
+			self.conv3 = tf.layers.conv2d(self.conv2, 64, 3, (1, 1), activation = tf.nn.relu, 
+				kernel_initializer=tf.contrib.layers.variance_scaling_initializer())
+			self.flat = tf.layers.flatten(self.conv3)
 			self.dense = tf.layers.dense(self.flat, 512, activation = tf.nn.relu, 
 				kernel_initializer=tf.contrib.layers.variance_scaling_initializer())
 			self.output = tf.layers.dense(self.dense, self.n_actions, 
 				kernel_initializer=tf.contrib.layers.variance_scaling_initializer())
-			self.targets = tf.placeholder(tf.float32, shape =[None])
-			self.actions = tf.placeholder(tf.float32, shape =[None])
+			self.targets = tf.placeholder(tf.float32, shape = [None])
+			self.actions = tf.placeholder(tf.float32, shape = [None])
 			self.loss = tf.losses.huber_loss(self.targets,
-				tf.reduce_sum(self.output*tf.one_hot(tf.cast(self.actions,tf.int32), self.n_actions),axis=1))
+				tf.reduce_sum(self.output * tf.one_hot(tf.cast(self.actions, tf.int32), self.n_actions), axis = 1))
 			self.optimizer = tf.train.RMSPropOptimizer(learning_rate).minimize(self.loss)
 		self.saver = tf.train.Saver(tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, self.name))
 		sess.run(tf.global_variables_initializer())
 		
 	def greedy_action(self, input):
-		output = sess.run(self.output, feed_dict={self.input: input})[0]
+		output = sess.run(self.output, feed_dict = {self.input: input})[0]
 		return (np.argmax(output), max(output)) #action, Q_value
 
 	def get_action(self, input, epsilon):
@@ -72,11 +79,11 @@ class DeepQNetwork:
 		return (action, Q_value, greedy)
 		
 	def feed_forward(self,input):
-		return sess.run(self.output, feed_dict={self.input: input})
+		return sess.run(self.output, feed_dict = {self.input: input})
 		
-	def get_targets(self,x_batch2,rewards_batch,dones_batch):
+	def get_targets(self, x_batch2, rewards_batch, dones_batch):
 		output = self.feed_forward(x_batch2)
-		targets = [compute_target(max(Q),reward,done) for (Q,reward,done) in zip(output, rewards_batch, dones_batch)]
+		targets = [compute_target(max(Q), reward, done) for (Q, reward, done) in zip(output, rewards_batch, dones_batch)]
 		return targets
 		
 	def train_on_batch(self, input_batch, targets, actions_batch):
@@ -85,10 +92,10 @@ class DeepQNetwork:
 		return loss
 		
 	def save(self, sess, path):
-		self.saver.restore(sess, path)
+		self.saver.save(sess, path)
 	
 	def load(self, sess, path):
-		self.saver.save(sess, path)
+		self.saver.restore(sess, path)
 		
 dqn = DeepQNetwork("dqn", LEARNING_RATE, N_ACTIONS)
 dqn_target = DeepQNetwork("dqn_target", LEARNING_RATE, N_ACTIONS)
@@ -104,8 +111,8 @@ def copy_weights(from_name, to_name):
 def compress(observation):
 	img = Image.fromarray(observation[CROP_BOTTOM : -CROP_TOP, : , : ])
 	img = img.convert("L")
-	img = img.resize((80,80), Image.NEAREST)
-	return np.reshape(np.array(img),[1, 80, 80, 1]) 
+	img = img.resize((84, 84), Image.NEAREST)
+	return np.reshape(np.array(img),[1, 84, 84, 1]) 
 	#don't divide by 255 yet as this changes from uint8 to float32 which takes up 4 times as much memory
 	
 class GameState:
@@ -139,7 +146,7 @@ class GameState:
 			if self.done: break
 		self.reward = reward
 		self.score += reward
-		self.observations_4 = np.concatenate([self.observations_4[:,:,:,1:4], compress(raw_observation)], -1)
+		self.observations_4 = np.concatenate([self.observations_4[ : , : , : , 1 : 4], compress(raw_observation)], -1)
 		self.env.render()
 
 state = GameState(ENV_NAME)
@@ -160,7 +167,7 @@ class ReplayMemory:
 		
 	def stack_observations(self, n, m):
 		observations = [self.observations[i] for i in range(n, m)]
-		return np.concatenate(observations,-1)
+		return np.concatenate(observations, -1)
 		
 	def get_batch(self, batch_size):
 		batch_idxs = [np.random.randint(3,len(self.actions)-1) for _ in range(batch_size)]
@@ -207,7 +214,7 @@ class PerformanceData:
 	def print_data(self):
 		print("Best score: {}".format(self.max_score))
 		print("Reward average over last {} rewards: {}".format(len(self.rewards), round(np.mean(self.rewards), 3)))
-		print("Score average over last {} games: {}".format(len(self.scores), round(np.mean(self.scores),1)))
+		print("Score average over last {} games: {}".format(len(self.scores), round(np.mean(self.scores), 1)))
 		if len(self.Q_values) > 0:
 			print("Predicted max Q average over last {} greedy steps: {:.2f}".format(len(self.Q_values), np.mean(self.Q_values)))
 		if len(self.losses) > 0:
@@ -215,8 +222,8 @@ class PerformanceData:
 		print("Probability of random action: {}".format(round(self.epsilon, 2)))
 		print("Total training steps: {}".format(self.steps_total))
 		time_elapsed = time.clock() - self.time_start
-		print("Total training hours: {}".format(round(time_elapsed / (60 * 60), 1)))
-		print("Average training steps per hour: {}".format(int(round(60 * 60 * self.steps_total / time_elapsed))))
+		print("Total training hours: {}".format(round(time_elapsed / 3600, 1)))
+		print("Average training steps per hour: {}".format(int(round(3600 * self.steps_total / time_elapsed))))
 		
 if TRAIN: data_name = "Training_Data"
 else: data_name = "Evaluation_Data"
@@ -229,22 +236,22 @@ if LOAD:
 copy_weights(dqn.name, dqn_target.name)
 while not (len(data.scores) >= N_SCORES and np.mean(data.scores) >= 18):
 	#initialize episode
-	print("\nStarting episode {}...".format(data.games_complete+1))
+	print("\nStarting episode {}...".format(data.games_complete + 1))
 	state.reset()
 	#game loop
 	while not state.done:
 		#get action
-		state.action, Q_value, greedy = dqn.get_action(state.observations_4/255, data.epsilon)
+		state.action, Q_value, greedy = dqn.get_action(state.observations_4 / 255, data.epsilon)
 		if greedy: data.Q_values.append(Q_value)
 		#perform action, update reward, done, observations_4, score
 		state.perform_action(FRAME_SKIP)
 		data.rewards.append(state.reward)
-		memory.append(state.observations_4[:,:,:,2:3], state.action, state.reward, state.done) #old observation
+		memory.append(state.observations_4[ : , : , : , 2 : 3 ], state.action, state.reward, state.done) #old observation
 		#train
 		if TRAIN and data.steps_total >= START_TRAIN and data.steps_total >= 5:
 			actions_batch, rewards_batch, dones_batch, x_batch, x_batch2 = memory.get_batch(MB_SIZE)
-			targets = dqn_target.get_targets(x_batch2/255, rewards_batch, dones_batch)
-			loss = dqn.train_on_batch(x_batch/255, targets, actions_batch)
+			targets = dqn_target.get_targets(x_batch2 / 255, rewards_batch, dones_batch)
+			loss = dqn.train_on_batch(x_batch / 255, targets, actions_batch)
 			data.losses.append(loss)
 		#step complete
 		state.steps += 1
